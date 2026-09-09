@@ -187,6 +187,15 @@ long_mode_entry:
     ; --------------------------------------------------------
 
     mov r12, [rsi + 0x18]       ; kernel entry
+        ; --------------------------------------------------------
+    ; Track physical address range of loaded kernel segments
+    ;
+    ; r10 = lowest p_paddr
+    ; r11 = highest p_paddr + p_memsz
+    ; --------------------------------------------------------
+
+    mov r10, 0xFFFFFFFFFFFFFFFF
+    xor r11d, r11d
 
     mov r13, [rsi + 0x20]       ; program header offset
 
@@ -238,6 +247,37 @@ elf_program_loop:
     ; Destination = p_paddr
     ; --------------------------------------------------------
 
+        ; --------------------------------------------------------
+    ; Update kernel physical start
+    ; --------------------------------------------------------
+
+    mov rax, [rbx + 0x18]
+
+    cmp rax, r10
+    jae .range_start_done
+
+    mov r10, rax
+
+.range_start_done:
+
+    ; --------------------------------------------------------
+    ; Update kernel physical end
+    ; --------------------------------------------------------
+
+    mov rax, [rbx + 0x18]
+    add rax, [rbx + 0x28]
+
+    cmp rax, r11
+    jbe .range_end_done
+
+    mov r11, rax
+
+.range_end_done:
+
+    ; --------------------------------------------------------
+    ; Destination = p_paddr
+    ; --------------------------------------------------------
+
     mov rdi, [rbx + 0x18]
 
     ; --------------------------------------------------------
@@ -274,17 +314,85 @@ next_program_header:
 
 elf_segments_done:
 
+    ; ========================================================
+    ; BUILD UNBOUND BOOTINFO
+    ;
+    ; BootInfo @ physical address 0x70000
+    ;
+    ; +0x00 : u64 magic
+    ; +0x08 : u32 version
+    ; +0x0C : u32 size
+    ; +0x10 : u8  boot_drive
+    ; +0x11 : u8[7] reserved
+    ; +0x18 : u64 kernel_phys_start
+    ; +0x20 : u64 kernel_phys_end
+    ;
+    ; Total size = 40 bytes
+    ; ========================================================
+
+    mov rdi, 0x70000
+
+    ; --------------------------------------------------------
+    ; magic = 0x554E424F554E4442
+    ; --------------------------------------------------------
+
+    mov rax, 0x554E424F554E4442
+    mov [rdi + 0x00], rax
+
+    ; --------------------------------------------------------
+    ; version = 1
+    ; --------------------------------------------------------
+
+    mov dword [rdi + 0x08], 1
+
+    ; --------------------------------------------------------
+    ; size = 40
+    ; --------------------------------------------------------
+
+    mov dword [rdi + 0x0C], 40
+
+    ; --------------------------------------------------------
+    ; boot drive + reserved bytes
+    ; --------------------------------------------------------
+
+    mov qword [rdi + 0x10], 0
+
+    mov al, [boot_drive]
+    mov [rdi + 0x10], al
+
+    ; --------------------------------------------------------
+    ; kernel physical start
+    ; --------------------------------------------------------
+
+    mov [rdi + 0x18], r10
+
+    ; --------------------------------------------------------
+    ; kernel physical end
+    ; --------------------------------------------------------
+
+    mov [rdi + 0x20], r11
+
+    ; --------------------------------------------------------
+    ; Pass BootInfo pointer to kernel
+    ;
+    ; System V AMD64:
+    ; first argument = RDI
+    ; --------------------------------------------------------
+
+    mov rdi, 0x70000
+
+    ; --------------------------------------------------------
+    ; Tell us the kernel is ready
+    ; --------------------------------------------------------
+
     mov rsi, kernel_ready_message
     call serial_write_string_64
 
     ; --------------------------------------------------------
-    ; Jump to ELF entry point.
+    ; Jump to ELF entry
     ;
-    ; Current kernel entry:
-    ;   0x1001d0
-    ;
-    ; We deliberately use the ELF header's e_entry instead of
-    ; hard-coding the address.
+    ; R12 = ELF e_entry
+    ; RDI = BootInfo
     ; --------------------------------------------------------
 
     jmp r12
@@ -557,7 +665,7 @@ kernel_dap:
     db 0x10
     db 0x00
 
-    dw 22
+    dw 19
 
     dw 0x0000
     dw 0x2000
