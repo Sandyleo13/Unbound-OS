@@ -22,18 +22,35 @@ software freedom, security, compatibility, and deep customization.
 
 Security should protect the user, not take ownership away from the user.
 
-## Development
+## Current Development Status
 
-Unbound OS is in early development.
+Unbound OS is in early development. The current bootstrap path is a custom
+BIOS-first boot chain built specifically for Unbound OS.
 
-Initial development target:
+### Working
 
-- x86_64
-- QEMU
-- Linux-based foundation
-- Rust for new system components
-- C/C++ where existing system software requires it
+- x86_64 development target
+- QEMU boot testing
+- Custom BIOS Stage 1 bootloader
+- Custom Stage 2 bootloader
+- 16-bit real mode startup
+- Protected mode transition
+- x86_64 long mode transition
+- Basic paging setup
+- ELF64 kernel loading
+- Custom kernel entry handoff
+- Versioned `BootInfo` structure passed from the bootloader to the kernel
+- Kernel-side BootInfo validation
+- Serial debug output from bootloader and kernel
+- Custom disk image builder without the Rust `bootloader` crate
 
----
+### Current Boot Flow
 
-**Your device. Your software. Your rules.**
+```text
+BIOS
+  -> Unbound Stage 1
+  -> Unbound Stage 2
+  -> x86_64 long mode
+  -> ELF64 kernel loader
+  -> BootInfo handoff
+  -> Unbound kernel
