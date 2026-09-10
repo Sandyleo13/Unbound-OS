@@ -839,7 +839,7 @@ kernel_dap:
     db 0x10
     db 0x00
 
-    dw 42
+    dw 58
 
     dw 0x0000
     dw 0x2000

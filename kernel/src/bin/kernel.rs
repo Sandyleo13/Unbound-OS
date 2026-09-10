@@ -17,6 +17,7 @@ use boot_info::{
 use core::arch::asm;
 use core::panic::PanicInfo;
 use memory::frame_allocator::FrameAllocator;
+use memory::page_table::{entry_address, indexes, map, PageTable};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
@@ -191,6 +192,79 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     } else {
         serial_write_string(b"FAIL\r\n");
     }
+
+
+    /*
+     * Virtual memory / page-table test.
+     *
+     * Allocate a physical frame for the root PML4, then ask the
+     * page-table mapper to create all missing intermediate tables.
+     */
+    serial_write_string(b"\r\nVIRTUAL MEMORY TEST\r\n");
+
+    let pml4_frame = frame_allocator.allocate_frame();
+
+    if let Some(pml4_frame) = pml4_frame {
+        let pml4 = unsafe { &mut *(pml4_frame as *mut PageTable) };
+        pml4.zero();
+
+        let virtual_address = 0x0040_0000;
+        let physical_address = 0x0010_0000;
+
+        match map(
+            pml4,
+            &mut frame_allocator,
+            virtual_address,
+            physical_address,
+            true,
+        ) {
+            Ok(()) => {
+                let [pml4_index, pdpt_index, pd_index, pt_index] =
+                    indexes(virtual_address);
+
+                let pdpt_address = entry_address(pml4.entries[pml4_index]);
+                let pdpt = unsafe { &*(pdpt_address as *const PageTable) };
+
+                let pd_address = entry_address(pdpt.entries[pdpt_index]);
+                let pd = unsafe { &*(pd_address as *const PageTable) };
+
+                let pt_address = entry_address(pd.entries[pd_index]);
+                let pt = unsafe { &*(pt_address as *const PageTable) };
+
+                let mapped_address = entry_address(pt.entries[pt_index]);
+
+                serial_write_string(b"VIRTUAL ADDRESS: 0x");
+                serial_write_hex64(virtual_address);
+                serial_write_string(b"\r\n");
+
+                serial_write_string(b"EXPECTED PHYSICAL: 0x");
+                serial_write_hex64(physical_address);
+                serial_write_string(b"\r\n");
+
+                serial_write_string(b"ACTUAL PHYSICAL: 0x");
+                serial_write_hex64(mapped_address);
+                serial_write_string(b"\r\n");
+
+                serial_write_string(b"PAGE TABLE MAP TEST: ");
+
+                if mapped_address == physical_address {
+                    serial_write_string(b"PASS\r\n");
+                } else {
+                    serial_write_string(b"FAIL\r\n");
+                }
+            }
+
+            Err(error) => {
+                serial_write_string(b"PAGE TABLE MAP ERROR: ");
+                serial_write_string(error.as_bytes());
+                serial_write_string(b"\r\n");
+            }
+        }
+    } else {
+        serial_write_string(b"PML4 ALLOCATION: FAIL\r\n");
+    }
+
+    serial_write_string(b"VIRTUAL MEMORY TEST COMPLETE\r\n");
 
     serial_write_string(b"\r\nUNBOUND KERNEL RUNNING\r\n");
 
