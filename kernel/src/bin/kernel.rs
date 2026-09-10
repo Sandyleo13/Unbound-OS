@@ -92,9 +92,31 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
     serial_write_string(b"\r\nGDT INITIALIZATION\r\n");
 
-    arch::x86_64::gdt::init();
+arch::x86_64::gdt::init();
 
-    serial_write_string(b"GDT: PASS\r\n");
+serial_write_string(b"GDT: PASS\r\n");
+
+serial_write_string(b"GDT VERIFICATION\r\n");
+
+serial_write_string(b"GDTR BASE: 0x");
+serial_write_hex64(
+    arch::x86_64::gdt::current_base()
+);
+serial_write_string(b"\r\n");
+
+serial_write_string(b"GDTR LIMIT: 0x");
+serial_write_hex32(
+    arch::x86_64::gdt::current_limit() as u32
+);
+serial_write_string(b"\r\n");
+
+serial_write_string(b"GDT VERIFY: ");
+
+if arch::x86_64::gdt::verify() {
+    serial_write_string(b"PASS\r\n");
+} else {
+    serial_write_string(b"FAIL\r\n");
+}
 
     // ------------------------------------------------------------
     // BOOT INFORMATION
