@@ -211,6 +211,80 @@ pub fn translate(
     Some(entry_address(pt_entry) + (virtual_address & 0xFFF))
 }
 
+/// Unmap one 4 KiB virtual page.
+///
+/// The physical frame is not freed here. This function only removes
+/// the virtual-to-physical mapping and returns the physical address
+/// that was previously mapped.
+pub fn unmap(
+    pml4: &mut PageTable,
+    virtual_address: u64,
+) -> Result<u64, &'static str> {
+    if !is_canonical(virtual_address) {
+        return Err("virtual address is not canonical");
+    }
+
+    if virtual_address % PAGE_SIZE != 0 {
+        return Err("virtual address is not page aligned");
+    }
+
+    let [pml4_index, pdpt_index, pd_index, pt_index] =
+        indexes(virtual_address);
+
+    let pml4_entry = pml4.entries[pml4_index];
+
+    if pml4_entry & PRESENT == 0 {
+        return Err("PML4 entry is not present");
+    }
+
+    let pdpt_address = entry_address(pml4_entry);
+
+    let pdpt =
+        unsafe { &mut *(phys_to_virt(pdpt_address) as *mut PageTable) };
+
+    let pdpt_entry = pdpt.entries[pdpt_index];
+
+    if pdpt_entry & PRESENT == 0 {
+        return Err("PDPT entry is not present");
+    }
+
+    if pdpt_entry & HUGE_PAGE != 0 {
+        return Err("cannot unmap a huge page with 4 KiB unmap");
+    }
+
+    let pd_address = entry_address(pdpt_entry);
+
+    let pd =
+        unsafe { &mut *(phys_to_virt(pd_address) as *mut PageTable) };
+
+    let pd_entry = pd.entries[pd_index];
+
+    if pd_entry & PRESENT == 0 {
+        return Err("PD entry is not present");
+    }
+
+    if pd_entry & HUGE_PAGE != 0 {
+        return Err("cannot unmap a huge page with 4 KiB unmap");
+    }
+
+    let pt_address = entry_address(pd_entry);
+
+    let pt =
+        unsafe { &mut *(phys_to_virt(pt_address) as *mut PageTable) };
+
+    let pte = pt.entries[pt_index];
+
+    if pte & PRESENT == 0 {
+        return Err("virtual page is not mapped");
+    }
+
+    let physical_address = entry_address(pte);
+
+    pt.entries[pt_index] = 0;
+
+    Ok(physical_address)
+}
+
 /// Get an existing child page table or allocate a new one.
 fn get_or_create_table(
     parent: &mut PageTable,

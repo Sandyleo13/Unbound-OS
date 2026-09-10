@@ -322,14 +322,34 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                     serial_write_string(b"IDENTITY MAP: PASS\r\n");
 
                     let pml4 = unsafe {
-                        &*(address_space.pml4_phys() as *const PageTable)
+                        &mut *(address_space.pml4_phys() as *mut PageTable)
                     };
+
+                    serial_write_string(b"TEST MAP: ");
+
+                    match memory::page_table::map(
+                        pml4,
+                        &mut frame_allocator,
+                        0x0040_0000,
+                        0x0010_0000,
+                        true,
+                    ) {
+                        Ok(()) => {
+                            serial_write_string(b"PASS\r\n");
+                        }
+
+                        Err(error) => {
+                            serial_write_string(b"FAIL: ");
+                            serial_write_string(error.as_bytes());
+                            serial_write_string(b"\r\n");
+                        }
+                    }
 
                     serial_write_string(b"TRANSLATION TEST: ");
 
                     match memory::page_table::translate(
                         pml4,
-                        0x0010_0000,
+                        0x0040_0000,
                     ) {
                         Some(physical_address)
                             if physical_address == 0x0010_0000 =>
@@ -346,6 +366,50 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
                         None => {
                             serial_write_string(b"FAIL: UNMAPPED\r\n");
+                        }
+                    }
+
+                    serial_write_string(b"UNMAP TEST: ");
+
+                    match memory::page_table::unmap(
+                        pml4,
+                        0x0040_0000,
+                    ) {
+                        Ok(physical_address)
+                            if physical_address == 0x0010_0000 =>
+                        {
+                            serial_write_string(b"PASS\r\n");
+                        }
+
+                        Ok(physical_address) => {
+                            serial_write_string(b"FAIL: WRONG PHYSICAL\r\n");
+                            serial_write_string(b"ACTUAL: 0x");
+                            serial_write_hex64(physical_address);
+                            serial_write_string(b"\r\n");
+                        }
+
+                        Err(error) => {
+                            serial_write_string(b"FAIL: ");
+                            serial_write_string(error.as_bytes());
+                            serial_write_string(b"\r\n");
+                        }
+                    }
+
+                    serial_write_string(b"POST-UNMAP TRANSLATION TEST: ");
+
+                    match memory::page_table::translate(
+                        pml4,
+                        0x0040_0000,
+                    ) {
+                        None => {
+                            serial_write_string(b"PASS: UNMAPPED\r\n");
+                        }
+
+                        Some(physical_address) => {
+                            serial_write_string(b"FAIL: STILL MAPPED\r\n");
+                            serial_write_string(b"PHYSICAL: 0x");
+                            serial_write_hex64(physical_address);
+                            serial_write_string(b"\r\n");
                         }
                     }
 
