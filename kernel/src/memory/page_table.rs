@@ -1,3 +1,4 @@
+use super::address::phys_to_virt;
 use super::frame_allocator::FrameAllocator;
 
 pub const PAGE_SIZE: u64 = 4096;
@@ -76,7 +77,7 @@ pub fn map(
         writable,
     )?;
 
-    let pdpt = unsafe { &mut *(pdpt_address as *mut PageTable) };
+    let pdpt = unsafe { &mut *(phys_to_virt(pdpt_address) as *mut PageTable) };
 
     let pd_address = get_or_create_table(
         pdpt,
@@ -85,7 +86,7 @@ pub fn map(
         writable,
     )?;
 
-    let pd = unsafe { &mut *(pd_address as *mut PageTable) };
+    let pd = unsafe { &mut *(phys_to_virt(pd_address) as *mut PageTable) };
 
     let pt_address = get_or_create_table(
         pd,
@@ -94,7 +95,7 @@ pub fn map(
         writable,
     )?;
 
-    let pt = unsafe { &mut *(pt_address as *mut PageTable) };
+    let pt = unsafe { &mut *(phys_to_virt(pt_address) as *mut PageTable) };
 
     if pt.entries[pt_index] & PRESENT != 0 {
         return Err("virtual page is already mapped");
@@ -122,7 +123,7 @@ fn get_or_create_table(
         .allocate_frame()
         .ok_or("out of physical memory")?;
 
-    let table = unsafe { &mut *(frame as *mut PageTable) };
+    let table = unsafe { &mut *(phys_to_virt(frame) as *mut PageTable) };
     table.zero();
 
     parent.entries[index] = make_entry(frame, writable);
