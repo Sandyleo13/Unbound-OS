@@ -267,6 +267,43 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
     serial_write_string(b"VIRTUAL MEMORY TEST COMPLETE\r\n");
 
+    serial_write_string(b"\r\nCANONICAL ADDRESS TEST\r\n");
+
+    let canonical_low = 0x0000_7FFF_FFFF_F000u64;
+    let canonical_high = 0xFFFF_8000_0000_0000u64;
+    let non_canonical_low = 0x0000_8000_0000_0000u64;
+    let non_canonical_high = 0xFFFF_7FFF_FFFF_FFFFu64;
+
+    serial_write_string(b"LOW CANONICAL: ");
+    if memory::page_table::is_canonical(canonical_low) {
+        serial_write_string(b"PASS\r\n");
+    } else {
+        serial_write_string(b"FAIL\r\n");
+    }
+
+    serial_write_string(b"HIGH CANONICAL: ");
+    if memory::page_table::is_canonical(canonical_high) {
+        serial_write_string(b"PASS\r\n");
+    } else {
+        serial_write_string(b"FAIL\r\n");
+    }
+
+    serial_write_string(b"LOW NON-CANONICAL: ");
+    if !memory::page_table::is_canonical(non_canonical_low) {
+        serial_write_string(b"PASS\r\n");
+    } else {
+        serial_write_string(b"FAIL\r\n");
+    }
+
+    serial_write_string(b"HIGH NON-CANONICAL: ");
+    if !memory::page_table::is_canonical(non_canonical_high) {
+        serial_write_string(b"PASS\r\n");
+    } else {
+        serial_write_string(b"FAIL\r\n");
+    }
+
+    serial_write_string(b"CANONICAL ADDRESS TEST COMPLETE\r\n");
+
     serial_write_string(b"\r\nADDRESS SPACE TEST\r\n");
 
     match AddressSpace::new(&mut frame_allocator) {

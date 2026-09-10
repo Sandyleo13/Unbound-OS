@@ -44,6 +44,22 @@ pub fn indexes(virtual_address: u64) -> [usize; 4] {
     ]
 }
 
+/// Check whether a virtual address is canonical in x86_64 long mode.
+///
+/// With the current 48-bit virtual-address configuration, bits 63:48
+/// must be a sign extension of bit 47.
+#[inline]
+pub fn is_canonical(virtual_address: u64) -> bool {
+    let upper = virtual_address >> 48;
+    let sign = (virtual_address >> 47) & 1;
+
+    if sign == 0 {
+        upper == 0
+    } else {
+        upper == 0xFFFF
+    }
+}
+
 /// Return the physical address stored in a page-table entry.
 pub fn entry_address(entry: u64) -> u64 {
     entry & ADDRESS_MASK
@@ -71,6 +87,10 @@ pub fn map(
     physical_address: u64,
     writable: bool,
 ) -> Result<(), &'static str> {
+    if !is_canonical(virtual_address) {
+        return Err("virtual address is not canonical");
+    }
+
     if virtual_address % PAGE_SIZE != 0 {
         return Err("virtual address is not page aligned");
     }
@@ -132,6 +152,10 @@ pub fn translate(
     pml4: &PageTable,
     virtual_address: u64,
 ) -> Option<u64> {
+    if !is_canonical(virtual_address) {
+        return None;
+    }
+
     let [pml4_index, pdpt_index, pd_index, pt_index] =
         indexes(virtual_address);
 
