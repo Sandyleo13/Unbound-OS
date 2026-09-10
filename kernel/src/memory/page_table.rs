@@ -5,6 +5,15 @@ pub const PAGE_SIZE: u64 = 4096;
 
 const PRESENT: u64 = 1 << 0;
 const WRITABLE: u64 = 1 << 1;
+const USER: u64 = 1 << 2;
+const WRITE_THROUGH: u64 = 1 << 3;
+const CACHE_DISABLE: u64 = 1 << 4;
+const ACCESSED: u64 = 1 << 5;
+const DIRTY: u64 = 1 << 6;
+const HUGE_PAGE: u64 = 1 << 7;
+const GLOBAL: u64 = 1 << 8;
+const NO_EXECUTE: u64 = 1 << 63;
+
 const ADDRESS_MASK: u64 = 0x000F_FFFF_FFFF_F000;
 
 #[repr(C, align(4096))]
@@ -35,10 +44,12 @@ pub fn indexes(virtual_address: u64) -> [usize; 4] {
     ]
 }
 
+/// Return the physical address stored in a page-table entry.
 pub fn entry_address(entry: u64) -> u64 {
     entry & ADDRESS_MASK
 }
 
+/// Build a normal 4 KiB page-table entry.
 pub fn make_entry(address: u64, writable: bool) -> u64 {
     let mut entry = address & ADDRESS_MASK;
     entry |= PRESENT;
@@ -68,7 +79,12 @@ pub fn map(
         return Err("physical address is not page aligned");
     }
 
-    let [pml4_index, pdpt_index, pd_index, pt_index] = indexes(virtual_address);
+    if physical_address > ADDRESS_MASK {
+        return Err("physical address exceeds supported page-table range");
+    }
+
+    let [pml4_index, pdpt_index, pd_index, pt_index] =
+        indexes(virtual_address);
 
     let pdpt_address = get_or_create_table(
         pml4,
@@ -77,7 +93,8 @@ pub fn map(
         writable,
     )?;
 
-    let pdpt = unsafe { &mut *(phys_to_virt(pdpt_address) as *mut PageTable) };
+    let pdpt =
+        unsafe { &mut *(phys_to_virt(pdpt_address) as *mut PageTable) };
 
     let pd_address = get_or_create_table(
         pdpt,
@@ -86,7 +103,8 @@ pub fn map(
         writable,
     )?;
 
-    let pd = unsafe { &mut *(phys_to_virt(pd_address) as *mut PageTable) };
+    let pd =
+        unsafe { &mut *(phys_to_virt(pd_address) as *mut PageTable) };
 
     let pt_address = get_or_create_table(
         pd,
@@ -95,7 +113,8 @@ pub fn map(
         writable,
     )?;
 
-    let pt = unsafe { &mut *(phys_to_virt(pt_address) as *mut PageTable) };
+    let pt =
+        unsafe { &mut *(phys_to_virt(pt_address) as *mut PageTable) };
 
     if pt.entries[pt_index] & PRESENT != 0 {
         return Err("virtual page is already mapped");
@@ -104,6 +123,68 @@ pub fn map(
     pt.entries[pt_index] = make_entry(physical_address, writable);
 
     Ok(())
+}
+
+/// Translate a virtual address using the supplied PML4.
+///
+/// Returns the physical address corresponding to the virtual address.
+pub fn translate(
+    pml4: &PageTable,
+    virtual_address: u64,
+) -> Option<u64> {
+    let [pml4_index, pdpt_index, pd_index, pt_index] =
+        indexes(virtual_address);
+
+    let pml4_entry = pml4.entries[pml4_index];
+
+    if pml4_entry & PRESENT == 0 {
+        return None;
+    }
+
+    let pdpt_address = entry_address(pml4_entry);
+
+    let pdpt =
+        unsafe { &*(phys_to_virt(pdpt_address) as *const PageTable) };
+
+    let pdpt_entry = pdpt.entries[pdpt_index];
+
+    if pdpt_entry & PRESENT == 0 {
+        return None;
+    }
+
+    if pdpt_entry & HUGE_PAGE != 0 {
+        let base = pdpt_entry & 0x000F_FFC0_0000_0000;
+        return Some(base + (virtual_address & 0x3FFF_FFFF));
+    }
+
+    let pd_address = entry_address(pdpt_entry);
+
+    let pd =
+        unsafe { &*(phys_to_virt(pd_address) as *const PageTable) };
+
+    let pd_entry = pd.entries[pd_index];
+
+    if pd_entry & PRESENT == 0 {
+        return None;
+    }
+
+    if pd_entry & HUGE_PAGE != 0 {
+        let base = pd_entry & 0x000F_FFFF_FFE0_0000;
+        return Some(base + (virtual_address & 0x1F_FFFF));
+    }
+
+    let pt_address = entry_address(pd_entry);
+
+    let pt =
+        unsafe { &*(phys_to_virt(pt_address) as *const PageTable) };
+
+    let pt_entry = pt.entries[pt_index];
+
+    if pt_entry & PRESENT == 0 {
+        return None;
+    }
+
+    Some(entry_address(pt_entry) + (virtual_address & 0xFFF))
 }
 
 /// Get an existing child page table or allocate a new one.
@@ -123,7 +204,9 @@ fn get_or_create_table(
         .allocate_frame()
         .ok_or("out of physical memory")?;
 
-    let table = unsafe { &mut *(phys_to_virt(frame) as *mut PageTable) };
+    let table =
+        unsafe { &mut *(phys_to_virt(frame) as *mut PageTable) };
+
     table.zero();
 
     parent.entries[index] = make_entry(frame, writable);

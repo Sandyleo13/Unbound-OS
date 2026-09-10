@@ -284,6 +284,34 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 Ok(()) => {
                     serial_write_string(b"IDENTITY MAP: PASS\r\n");
 
+                    let pml4 = unsafe {
+                        &*(address_space.pml4_phys() as *const PageTable)
+                    };
+
+                    serial_write_string(b"TRANSLATION TEST: ");
+
+                    match memory::page_table::translate(
+                        pml4,
+                        0x0010_0000,
+                    ) {
+                        Some(physical_address)
+                            if physical_address == 0x0010_0000 =>
+                        {
+                            serial_write_string(b"PASS\r\n");
+                        }
+
+                        Some(physical_address) => {
+                            serial_write_string(b"FAIL: WRONG PHYSICAL\r\n");
+                            serial_write_string(b"ACTUAL: 0x");
+                            serial_write_hex64(physical_address);
+                            serial_write_string(b"\r\n");
+                        }
+
+                        None => {
+                            serial_write_string(b"FAIL: UNMAPPED\r\n");
+                        }
+                    }
+
                     serial_write_string(b"CR3 SWITCH: START\r\n");
                     address_space.activate();
                     serial_write_string(b"CR3 SWITCH: PASS\r\n");
