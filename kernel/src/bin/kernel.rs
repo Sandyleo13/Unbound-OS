@@ -1,6 +1,9 @@
 #![no_std]
 #![no_main]
 
+#[path = "../arch/mod.rs"]
+mod arch;
+
 #[path = "../boot_info.rs"]
 mod boot_info;
 
@@ -14,15 +17,26 @@ use boot_info::{
     BOOT_INFO_VERSION,
     MEMORY_MAP_ENTRY_SIZE,
 };
+
 use core::arch::asm;
 use core::panic::PanicInfo;
+
 use memory::address_space::AddressSpace;
 use memory::frame_allocator::FrameAllocator;
-use memory::page_table::{entry_address, indexes, map, PageTable};
+use memory::page_table::{
+    entry_address,
+    indexes,
+    map,
+    PageTable,
+};
 
 #[unsafe(no_mangle)]
 pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     serial_write_string(b"KERNEL ENTRY\r\n");
+
+    // ------------------------------------------------------------
+    // BOOTINFO VALIDATION
+    // ------------------------------------------------------------
 
     if boot_info.is_null() {
         serial_write_string(b"BOOTINFO NULL\r\n");
@@ -72,6 +86,20 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
     serial_write_string(b"BOOTINFO OK\r\n");
 
+    // ------------------------------------------------------------
+    // GDT
+    // ------------------------------------------------------------
+
+    serial_write_string(b"\r\nGDT INITIALIZATION\r\n");
+
+    arch::x86_64::gdt::init();
+
+    serial_write_string(b"GDT: PASS\r\n");
+
+    // ------------------------------------------------------------
+    // BOOT INFORMATION
+    // ------------------------------------------------------------
+
     serial_write_string(b"MEMORY MAP ENTRIES: ");
     serial_write_hex32(info.memory_map_count);
     serial_write_string(b"\r\n");
@@ -88,7 +116,10 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     serial_write_hex64(info.kernel_phys_end);
     serial_write_string(b"\r\n");
 
-    // Print the actual E820 entries.
+    // ------------------------------------------------------------
+    // E820 MEMORY MAP
+    // ------------------------------------------------------------
+
     serial_write_string(b"\r\nE820 MEMORY MAP\r\n");
 
     let entries = unsafe {
@@ -120,6 +151,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write_string(b"\r\n");
     }
 
+    // ------------------------------------------------------------
+    // PHYSICAL MEMORY MANAGER
+    // ------------------------------------------------------------
 
     /*
      * Initialize the physical frame allocator from the E820 map.
@@ -128,6 +162,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
      * E820 type-1 regions, then reserves memory owned by the bootloader
      * and kernel.
      */
+
     let mut frame_allocator = FrameAllocator::empty();
 
     frame_allocator.initialize(
@@ -137,13 +172,15 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     );
 
     serial_write_string(b"\r\nPHYSICAL MEMORY MANAGER\r\n");
+
     serial_write_string(b"FREE FRAMES: ");
     serial_write_hex64(frame_allocator.free_frames() as u64);
     serial_write_string(b"\r\n");
 
-    /*
-     * Allocate three frames as a basic PMM sanity test.
-     */
+    // ------------------------------------------------------------
+    // PHYSICAL FRAME ALLOCATION TEST
+    // ------------------------------------------------------------
+
     serial_write_string(b"ALLOCATING TEST FRAMES\r\n");
 
     let frame1 = frame_allocator.allocate_frame();
@@ -174,12 +211,18 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     serial_write_hex64(frame_allocator.free_frames() as u64);
     serial_write_string(b"\r\n");
 
+    // ------------------------------------------------------------
+    // RESERVED FRAME FREE TEST
+    // ------------------------------------------------------------
+
     /*
      * Attempt to free a reserved frame.
      *
      * Frame 0 belongs to the reserved first 1 MiB and was never
-     * returned by allocate_frame(). The free-frame count must not change.
+     * returned by allocate_frame(). The free-frame count must not
+     * change.
      */
+
     let free_before_reserved_test = frame_allocator.free_frames();
 
     frame_allocator.free_frame(0x00000000);
@@ -194,6 +237,9 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
         serial_write_string(b"FAIL\r\n");
     }
 
+    // ------------------------------------------------------------
+    // VIRTUAL MEMORY TEST
+    // ------------------------------------------------------------
 
     /*
      * Virtual memory / page-table test.
@@ -201,12 +247,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
      * Allocate a physical frame for the root PML4, then ask the
      * page-table mapper to create all missing intermediate tables.
      */
+
     serial_write_string(b"\r\nVIRTUAL MEMORY TEST\r\n");
 
     let pml4_frame = frame_allocator.allocate_frame();
 
     if let Some(pml4_frame) = pml4_frame {
-        let pml4 = unsafe { &mut *(pml4_frame as *mut PageTable) };
+        let pml4 = unsafe {
+            &mut *(pml4_frame as *mut PageTable)
+        };
+
         pml4.zero();
 
         let virtual_address = 0x0040_0000;
@@ -223,16 +273,26 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 let [pml4_index, pdpt_index, pd_index, pt_index] =
                     indexes(virtual_address);
 
-                let pdpt_address = entry_address(pml4.entries[pml4_index]);
-                let pdpt = unsafe { &*(pdpt_address as *const PageTable) };
+                let pdpt_address =
+                    entry_address(pml4.entries[pml4_index]);
 
-                let pd_address = entry_address(pdpt.entries[pdpt_index]);
-                let pd = unsafe { &*(pd_address as *const PageTable) };
+                let pdpt =
+                    unsafe { &*(pdpt_address as *const PageTable) };
 
-                let pt_address = entry_address(pd.entries[pd_index]);
-                let pt = unsafe { &*(pt_address as *const PageTable) };
+                let pd_address =
+                    entry_address(pdpt.entries[pdpt_index]);
 
-                let mapped_address = entry_address(pt.entries[pt_index]);
+                let pd =
+                    unsafe { &*(pd_address as *const PageTable) };
+
+                let pt_address =
+                    entry_address(pd.entries[pd_index]);
+
+                let pt =
+                    unsafe { &*(pt_address as *const PageTable) };
+
+                let mapped_address =
+                    entry_address(pt.entries[pt_index]);
 
                 serial_write_string(b"VIRTUAL ADDRESS: 0x");
                 serial_write_hex64(virtual_address);
@@ -267,14 +327,23 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
     serial_write_string(b"VIRTUAL MEMORY TEST COMPLETE\r\n");
 
+    // ------------------------------------------------------------
+    // CANONICAL ADDRESS TEST
+    // ------------------------------------------------------------
+
     serial_write_string(b"\r\nCANONICAL ADDRESS TEST\r\n");
 
     let canonical_low = 0x0000_7FFF_FFFF_F000u64;
     let canonical_high = 0xFFFF_8000_0000_0000u64;
-    let non_canonical_low = 0x0000_8000_0000_0000u64;
-    let non_canonical_high = 0xFFFF_7FFF_FFFF_FFFFu64;
+
+    let non_canonical_low =
+        0x0000_8000_0000_0000u64;
+
+    let non_canonical_high =
+        0xFFFF_7FFF_FFFF_FFFFu64;
 
     serial_write_string(b"LOW CANONICAL: ");
+
     if memory::page_table::is_canonical(canonical_low) {
         serial_write_string(b"PASS\r\n");
     } else {
@@ -282,6 +351,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     serial_write_string(b"HIGH CANONICAL: ");
+
     if memory::page_table::is_canonical(canonical_high) {
         serial_write_string(b"PASS\r\n");
     } else {
@@ -289,6 +359,7 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     serial_write_string(b"LOW NON-CANONICAL: ");
+
     if !memory::page_table::is_canonical(non_canonical_low) {
         serial_write_string(b"PASS\r\n");
     } else {
@@ -296,20 +367,31 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     serial_write_string(b"HIGH NON-CANONICAL: ");
+
     if !memory::page_table::is_canonical(non_canonical_high) {
         serial_write_string(b"PASS\r\n");
     } else {
         serial_write_string(b"FAIL\r\n");
     }
 
-    serial_write_string(b"CANONICAL ADDRESS TEST COMPLETE\r\n");
+    serial_write_string(
+        b"CANONICAL ADDRESS TEST COMPLETE\r\n",
+    );
+
+    // ------------------------------------------------------------
+    // ADDRESS SPACE TEST
+    // ------------------------------------------------------------
 
     serial_write_string(b"\r\nADDRESS SPACE TEST\r\n");
 
     match AddressSpace::new(&mut frame_allocator) {
         Ok(mut address_space) => {
             serial_write_string(b"PML4 CREATED: 0x");
-            serial_write_hex64(address_space.pml4_phys());
+
+            serial_write_hex64(
+                address_space.pml4_phys(),
+            );
+
             serial_write_string(b"\r\n");
 
             match address_space.identity_map(
@@ -319,13 +401,24 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                 true,
             ) {
                 Ok(()) => {
-                    serial_write_string(b"IDENTITY MAP: PASS\r\n");
+                    serial_write_string(
+                        b"IDENTITY MAP: PASS\r\n",
+                    );
 
                     let pml4 = unsafe {
-                        &mut *(address_space.pml4_phys() as *mut PageTable)
+                        &mut *(
+                            address_space.pml4_phys()
+                                as *mut PageTable
+                        )
                     };
 
-                    serial_write_string(b"TEST MAP: ");
+                    // ------------------------------------------------
+                    // TEST MAP
+                    // ------------------------------------------------
+
+                    serial_write_string(
+                        b"TEST MAP: ",
+                    );
 
                     match memory::page_table::map(
                         pml4,
@@ -335,111 +428,227 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
                         true,
                     ) {
                         Ok(()) => {
-                            serial_write_string(b"PASS\r\n");
+                            serial_write_string(
+                                b"PASS\r\n",
+                            );
                         }
 
                         Err(error) => {
-                            serial_write_string(b"FAIL: ");
-                            serial_write_string(error.as_bytes());
-                            serial_write_string(b"\r\n");
+                            serial_write_string(
+                                b"FAIL: ",
+                            );
+
+                            serial_write_string(
+                                error.as_bytes(),
+                            );
+
+                            serial_write_string(
+                                b"\r\n",
+                            );
                         }
                     }
 
-                    serial_write_string(b"TRANSLATION TEST: ");
+                    // ------------------------------------------------
+                    // TRANSLATION TEST
+                    // ------------------------------------------------
+
+                    serial_write_string(
+                        b"TRANSLATION TEST: ",
+                    );
 
                     match memory::page_table::translate(
                         pml4,
                         0x0040_0000,
                     ) {
                         Some(physical_address)
-                            if physical_address == 0x0010_0000 =>
+                            if physical_address
+                                == 0x0010_0000 =>
                         {
-                            serial_write_string(b"PASS\r\n");
+                            serial_write_string(
+                                b"PASS\r\n",
+                            );
                         }
 
                         Some(physical_address) => {
-                            serial_write_string(b"FAIL: WRONG PHYSICAL\r\n");
-                            serial_write_string(b"ACTUAL: 0x");
-                            serial_write_hex64(physical_address);
-                            serial_write_string(b"\r\n");
+                            serial_write_string(
+                                b"FAIL: WRONG PHYSICAL\r\n",
+                            );
+
+                            serial_write_string(
+                                b"ACTUAL: 0x",
+                            );
+
+                            serial_write_hex64(
+                                physical_address,
+                            );
+
+                            serial_write_string(
+                                b"\r\n",
+                            );
                         }
 
                         None => {
-                            serial_write_string(b"FAIL: UNMAPPED\r\n");
+                            serial_write_string(
+                                b"FAIL: UNMAPPED\r\n",
+                            );
                         }
                     }
 
-                    serial_write_string(b"UNMAP TEST: ");
+                    // ------------------------------------------------
+                    // UNMAP TEST
+                    // ------------------------------------------------
+
+                    serial_write_string(
+                        b"UNMAP TEST: ",
+                    );
 
                     match memory::page_table::unmap(
                         pml4,
                         0x0040_0000,
                     ) {
                         Ok(physical_address)
-                            if physical_address == 0x0010_0000 =>
+                            if physical_address
+                                == 0x0010_0000 =>
                         {
-                            serial_write_string(b"PASS\r\n");
+                            serial_write_string(
+                                b"PASS\r\n",
+                            );
                         }
 
                         Ok(physical_address) => {
-                            serial_write_string(b"FAIL: WRONG PHYSICAL\r\n");
-                            serial_write_string(b"ACTUAL: 0x");
-                            serial_write_hex64(physical_address);
-                            serial_write_string(b"\r\n");
+                            serial_write_string(
+                                b"FAIL: WRONG PHYSICAL\r\n",
+                            );
+
+                            serial_write_string(
+                                b"ACTUAL: 0x",
+                            );
+
+                            serial_write_hex64(
+                                physical_address,
+                            );
+
+                            serial_write_string(
+                                b"\r\n",
+                            );
                         }
 
                         Err(error) => {
-                            serial_write_string(b"FAIL: ");
-                            serial_write_string(error.as_bytes());
-                            serial_write_string(b"\r\n");
+                            serial_write_string(
+                                b"FAIL: ",
+                            );
+
+                            serial_write_string(
+                                error.as_bytes(),
+                            );
+
+                            serial_write_string(
+                                b"\r\n",
+                            );
                         }
                     }
 
-                    serial_write_string(b"POST-UNMAP TRANSLATION TEST: ");
+                    // ------------------------------------------------
+                    // POST-UNMAP TRANSLATION TEST
+                    // ------------------------------------------------
+
+                    serial_write_string(
+                        b"POST-UNMAP TRANSLATION TEST: ",
+                    );
 
                     match memory::page_table::translate(
                         pml4,
                         0x0040_0000,
                     ) {
                         None => {
-                            serial_write_string(b"PASS: UNMAPPED\r\n");
+                            serial_write_string(
+                                b"PASS: UNMAPPED\r\n",
+                            );
                         }
 
                         Some(physical_address) => {
-                            serial_write_string(b"FAIL: STILL MAPPED\r\n");
-                            serial_write_string(b"PHYSICAL: 0x");
-                            serial_write_hex64(physical_address);
-                            serial_write_string(b"\r\n");
+                            serial_write_string(
+                                b"FAIL: STILL MAPPED\r\n",
+                            );
+
+                            serial_write_string(
+                                b"PHYSICAL: 0x",
+                            );
+
+                            serial_write_hex64(
+                                physical_address,
+                            );
+
+                            serial_write_string(
+                                b"\r\n",
+                            );
                         }
                     }
 
-                    serial_write_string(b"CR3 SWITCH: START\r\n");
+                    // ------------------------------------------------
+                    // CR3 SWITCH
+                    // ------------------------------------------------
+
+                    serial_write_string(
+                        b"CR3 SWITCH: START\r\n",
+                    );
+
                     address_space.activate();
-                    serial_write_string(b"CR3 SWITCH: PASS\r\n");
+
+                    serial_write_string(
+                        b"CR3 SWITCH: PASS\r\n",
+                    );
                 }
 
                 Err(error) => {
-                    serial_write_string(b"IDENTITY MAP: FAIL: ");
-                    serial_write_string(error.as_bytes());
-                    serial_write_string(b"\r\n");
+                    serial_write_string(
+                        b"IDENTITY MAP: FAIL: ",
+                    );
+
+                    serial_write_string(
+                        error.as_bytes(),
+                    );
+
+                    serial_write_string(
+                        b"\r\n",
+                    );
                 }
             }
         }
 
         Err(error) => {
-            serial_write_string(b"PML4 CREATION: FAIL: ");
-            serial_write_string(error.as_bytes());
-            serial_write_string(b"\r\n");
+            serial_write_string(
+                b"PML4 CREATION: FAIL: ",
+            );
+
+            serial_write_string(
+                error.as_bytes(),
+            );
+
+            serial_write_string(
+                b"\r\n",
+            );
         }
     }
 
-    serial_write_string(b"ADDRESS SPACE TEST COMPLETE\r\n");
+    // ------------------------------------------------------------
+    // KERNEL RUNNING
+    // ------------------------------------------------------------
 
+    serial_write_string(
+        b"ADDRESS SPACE TEST COMPLETE\r\n",
+    );
 
-    serial_write_string(b"\r\nUNBOUND KERNEL RUNNING\r\n");
+    serial_write_string(
+        b"\r\nUNBOUND KERNEL RUNNING\r\n",
+    );
 
     halt();
 }
+
+// ================================================================
+// CPU HALT
+// ================================================================
 
 fn halt() -> ! {
     unsafe {
@@ -452,6 +661,10 @@ fn halt() -> ! {
         );
     }
 }
+
+// ================================================================
+// SERIAL OUTPUT
+// ================================================================
 
 fn serial_write_char(c: u8) {
     unsafe {
@@ -483,16 +696,27 @@ fn serial_write_string(s: &[u8]) {
     }
 }
 
+// ================================================================
+// HEX OUTPUT
+// ================================================================
+
 fn serial_write_hex8(value: u8) {
-    serial_write_hex_digit((value >> 4) & 0x0F);
-    serial_write_hex_digit(value & 0x0F);
+    serial_write_hex_digit(
+        (value >> 4) & 0x0F,
+    );
+
+    serial_write_hex_digit(
+        value & 0x0F,
+    );
 }
 
 fn serial_write_hex32(value: u32) {
     let mut shift = 28;
 
     loop {
-        let digit = ((value >> shift) & 0x0F) as u8;
+        let digit =
+            ((value >> shift) & 0x0F) as u8;
+
         serial_write_hex_digit(digit);
 
         if shift == 0 {
@@ -507,7 +731,9 @@ fn serial_write_hex64(value: u64) {
     let mut shift = 60;
 
     loop {
-        let digit = ((value >> shift) & 0x0F) as u8;
+        let digit =
+            ((value >> shift) & 0x0F) as u8;
+
         serial_write_hex_digit(digit);
 
         if shift == 0 {
@@ -528,8 +754,15 @@ fn serial_write_hex_digit(value: u8) {
     serial_write_char(c);
 }
 
+// ================================================================
+// PANIC HANDLER
+// ================================================================
+
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
-    serial_write_string(b"KERNEL PANIC\r\n");
+    serial_write_string(
+        b"KERNEL PANIC\r\n",
+    );
+
     halt();
 }
