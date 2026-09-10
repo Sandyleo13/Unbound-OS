@@ -1,3 +1,6 @@
+use core::arch::asm;
+
+use super::address::phys_to_virt;
 use super::frame_allocator::FrameAllocator;
 use super::page_table::{map, PageTable, PAGE_SIZE};
 
@@ -12,7 +15,10 @@ impl AddressSpace {
             .allocate_frame()
             .ok_or("out of physical memory")?;
 
-        let pml4 = unsafe { &mut *(pml4_phys as *mut PageTable) };
+        let pml4 = unsafe {
+            &mut *(phys_to_virt(pml4_phys) as *mut PageTable)
+        };
+
         pml4.zero();
 
         Ok(Self { pml4_phys })
@@ -40,7 +46,9 @@ impl AddressSpace {
             return Err("identity-map range is empty");
         }
 
-        let pml4 = unsafe { &mut *(self.pml4_phys as *mut PageTable) };
+        let pml4 = unsafe {
+            &mut *(phys_to_virt(self.pml4_phys) as *mut PageTable)
+        };
 
         let mut address = start;
 
@@ -57,6 +65,17 @@ impl AddressSpace {
         }
 
         Ok(())
+    }
+
+    /// Activate this address space by loading its PML4 into CR3.
+    pub fn activate(&self) {
+        unsafe {
+            asm!(
+                "mov cr3, {}",
+                in(reg) self.pml4_phys,
+                options(nostack, preserves_flags),
+            );
+        }
     }
 
     /// Return the physical address of the PML4.

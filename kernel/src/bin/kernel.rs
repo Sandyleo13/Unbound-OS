@@ -277,12 +277,16 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
 
             match address_space.identity_map(
                 &mut frame_allocator,
-                0x0010_0000,
-                0x0010_1000,
+                0x0000_0000,
+                0x0020_0000,
                 true,
             ) {
                 Ok(()) => {
                     serial_write_string(b"IDENTITY MAP: PASS\r\n");
+
+                    serial_write_string(b"CR3 SWITCH: START\r\n");
+                    address_space.activate();
+                    serial_write_string(b"CR3 SWITCH: PASS\r\n");
                 }
 
                 Err(error) => {
