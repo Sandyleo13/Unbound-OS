@@ -16,6 +16,7 @@ use boot_info::{
 };
 use core::arch::asm;
 use core::panic::PanicInfo;
+use memory::address_space::AddressSpace;
 use memory::frame_allocator::FrameAllocator;
 use memory::page_table::{entry_address, indexes, map, PageTable};
 
@@ -265,6 +266,42 @@ pub extern "C" fn _start(boot_info: *const BootInfo) -> ! {
     }
 
     serial_write_string(b"VIRTUAL MEMORY TEST COMPLETE\r\n");
+
+    serial_write_string(b"\r\nADDRESS SPACE TEST\r\n");
+
+    match AddressSpace::new(&mut frame_allocator) {
+        Ok(mut address_space) => {
+            serial_write_string(b"PML4 CREATED: 0x");
+            serial_write_hex64(address_space.pml4_phys());
+            serial_write_string(b"\r\n");
+
+            match address_space.identity_map(
+                &mut frame_allocator,
+                0x0010_0000,
+                0x0010_1000,
+                true,
+            ) {
+                Ok(()) => {
+                    serial_write_string(b"IDENTITY MAP: PASS\r\n");
+                }
+
+                Err(error) => {
+                    serial_write_string(b"IDENTITY MAP: FAIL: ");
+                    serial_write_string(error.as_bytes());
+                    serial_write_string(b"\r\n");
+                }
+            }
+        }
+
+        Err(error) => {
+            serial_write_string(b"PML4 CREATION: FAIL: ");
+            serial_write_string(error.as_bytes());
+            serial_write_string(b"\r\n");
+        }
+    }
+
+    serial_write_string(b"ADDRESS SPACE TEST COMPLETE\r\n");
+
 
     serial_write_string(b"\r\nUNBOUND KERNEL RUNNING\r\n");
 
