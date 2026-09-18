@@ -1,56 +1,499 @@
 # Unbound OS
 
-**Your device. Your software. Your rules.**
+> **Your device. Your software. Your rules.**
 
-Unbound OS is an operating system project focused on user ownership,
-software freedom, security, compatibility, and deep customization.
+Unbound OS is a from-scratch operating system project written primarily in Rust, built around a custom boot pipeline and a minimal x86_64 kernel.
 
-## Goals
+The project is focused on understanding and building the operating system stack from the ground up rather than relying on an existing general-purpose OS architecture.
 
-- User-owned computing
-- Native applications
-- Linux application compatibility
-- Android application compatibility
-- Sideloading
-- User-controlled permissions
-- Minimal unnecessary software
-- Strong security without unnecessary restrictions
-- Deep customization
-- Desktop and eventually mobile support
+---
 
-## Philosophy
+## Project Status
 
-Security should protect the user, not take ownership away from the user.
+**Current stage:** Kernel architecture and execution infrastructure
 
-## Current Development Status
+**Target architecture:** x86_64
 
-Unbound OS is in early development. The current bootstrap path is a custom
-BIOS-first boot chain built specifically for Unbound OS.
+**Kernel language:** Rust
 
-### Working
+**Boot strategy:** Custom BIOS-first boot chain
 
-- x86_64 development target
-- QEMU boot testing
-- Custom BIOS Stage 1 bootloader
-- Custom Stage 2 bootloader
-- 16-bit real mode startup
-- Protected mode transition
-- x86_64 long mode transition
-- Basic paging setup
-- ELF64 kernel loading
-- Custom kernel entry handoff
-- Versioned `BootInfo` structure passed from the bootloader to the kernel
-- Kernel-side BootInfo validation
-- Serial debug output from bootloader and kernel
-- Custom disk image builder without the Rust `bootloader` crate
+**Current test environment:** QEMU
 
-### Current Boot Flow
+### Current progress
+
+* [x] Custom BIOS boot chain
+* [x] Stage 1 / Stage 2 boot flow
+* [x] ELF64 kernel loading
+* [x] Versioned `BootInfo` handoff
+* [x] Kernel entry
+* [x] GDT initialization
+* [x] TSS initialization
+* [x] IDT initialization
+* [x] Early exception handling
+* [x] Physical memory manager
+* [x] x86_64 page tables
+* [x] Virtual memory mapping
+* [x] Address-space creation
+* [x] CR3 switching
+* [x] Kernel heap virtual mapping
+* [x] Cooperative context switching
+* [x] PIC initialization
+* [x] PIT initialization
+* [x] Hardware timer IRQ0
+* [x] Basic kernel object system
+* [x] IPC endpoint/message infrastructure
+* [x] Initial syscall ABI
+* [x] SYSCALL/SYSRET infrastructure
+* [x] Ring 3 user-space test setup
+* [ ] Preemptive scheduler integration
+* [ ] Stable Ring 3 execution
+* [ ] Full syscall/user-space ABI
+* [ ] Process management
+* [ ] Userspace
+* [ ] Filesystem
+* [ ] Shell
+* [ ] Networking
+* [ ] GUI/Desktop
+
+---
+
+## Current Checkpoint — September 2026
+
+The kernel has progressed beyond the initial boot stage into the core CPU, memory, interrupt, scheduling, IPC and syscall infrastructure.
+
+The following kernel components have been implemented and tested individually:
+
+### CPU & Execution
+
+* GDT
+* TSS
+* IDT
+* x86_64 exception handling
+* Kernel/user segment descriptors
+* CPU context switching
+* Task contexts
+* Kernel stacks
+* Interrupt return paths
+
+### Memory Management
+
+* Physical frame allocator
+* E820 memory-map handling
+* x86_64 four-level page tables
+* Virtual address mapping
+* Page translation
+* Page unmapping
+* Address-space creation
+* CR3 activation
+* Kernel heap virtual mapping
+
+### Interrupts & Timers
+
+* 8259 PIC initialization
+* IRQ remapping
+* PIT initialization
+* 64 Hz timer
+* IRQ0 handling
+* Interrupt-frame validation
+
+### Kernel Objects
+
+Initial object infrastructure is implemented with generation-based handles.
+
+Supported object types currently include:
+
+* Process
+* Thread
+* AddressSpace
+* IPC Endpoint
+* File
+* Device
+* Event
+
+### IPC
+
+Initial IPC infrastructure includes:
+
+* IPC endpoints
+* Generation-based handles
+* Message queues
+* Fixed-size messages
+* Send/receive operations
+* Queue management
+
+### Syscalls
+
+The first syscall ABI is in place.
+
+Current test syscall:
 
 ```text
-BIOS
-  -> Unbound Stage 1
-  -> Unbound Stage 2
-  -> x86_64 long mode
-  -> ELF64 kernel loader
-  -> BootInfo handoff
-  -> Unbound kernel
+SYS_GET_VERSION = 0
+```
+
+The initial ABI version is:
+
+```text
+1
+```
+
+The x86_64 `SYSCALL` / `SYSRET` MSR infrastructure has also been added.
+
+### Ring 3
+
+The kernel now contains the initial infrastructure required to transition into Ring 3:
+
+```text
+Ring 0 kernel
+      ↓
+user address space
+      ↓
+user code mapping
+      ↓
+user stack mapping
+      ↓
+IRETQ
+      ↓
+Ring 3
+      ↓
+SYSCALL
+      ↓
+Ring 0 syscall handler
+      ↓
+SYSRETQ
+      ↓
+Ring 3
+```
+
+This is currently a **development test path**, not yet a production-safe userspace implementation.
+
+---
+
+## Current Blocker
+
+The current debugging point is the interrupt exception return path.
+
+The kernel successfully reaches the exception handler, but an exception is repeatedly generated while returning through `iretq`.
+
+Current observed state:
+
+```text
+Exception: #GP
+Vector:    0x0D
+CS:        0x08
+RIP:       0x107B12
+```
+
+The faulting RIP corresponds to the `iretq` instruction in the common exception handler.
+
+The next debugging step is to inspect the exact exception stack layout generated by the IDT assembly embedded in:
+
+```text
+kernel/src/arch/x86_64/idt.rs
+```
+
+The goal is to verify the exact position of:
+
+```text
+register state
+vector
+error code
+RIP
+CS
+RFLAGS
+RSP
+SS
+```
+
+before making another change to the exception return path.
+
+**Do not consider the scheduler or Ring 3 path complete until this is resolved.**
+
+---
+
+# Architecture
+
+The current high-level architecture is:
+
+```text
+BIOS / UEFI
+     │
+     ▼
+Unbound Stage 1
+     │
+     ▼
+Unbound Stage 2
+     │
+     ▼
+x86_64 Loader
+     │
+     ▼
+Kernel
+     │
+     ├── CPU
+     ├── Interrupts
+     ├── Memory
+     ├── Scheduler
+     ├── Objects
+     ├── IPC
+     ├── Syscalls
+     │
+     ▼
+Userspace
+```
+
+The long-term direction is to keep the system independent from GRUB and avoid making an existing general-purpose bootloader the core of Unbound OS.
+
+---
+
+# Repository Structure
+
+```text
+unbound-os/
+├── boot/
+│   ├── stage1/
+│   └── stage2/
+│
+├── kernel/
+│   └── src/
+│       ├── arch/
+│       │   └── x86_64/
+│       ├── ipc/
+│       ├── objects/
+│       ├── scheduler/
+│       ├── syscall/
+│       └── ...
+│
+├── tools/
+│   ├── image-builder/
+│   └── dev/
+│
+├── userspace/
+│
+├── docs/
+│
+├── third_party/
+│
+├── Cargo.toml
+├── rust-toolchain.toml
+└── README.md
+```
+
+---
+
+# Build Environment
+
+Current development environment:
+
+```text
+Host:       Windows
+Environment: WSL2
+Distribution: Ubuntu
+Architecture: x86_64
+Kernel:     Rust nightly
+Target:     x86_64-unknown-none
+Emulator:   QEMU
+```
+
+The project uses a nightly Rust toolchain because of the bare-metal kernel requirements.
+
+---
+
+# Building
+
+From the project root:
+
+```bash
+cd ~/unbound-os
+```
+
+Build the kernel:
+
+```bash
+cargo +nightly build
+```
+
+Build the host-side image builder explicitly for Linux:
+
+```bash
+cargo +nightly build -p image-builder --target x86_64-unknown-linux-gnu
+```
+
+The development helper can also be used:
+
+```bash
+./tools/dev/unbound.sh
+```
+
+---
+
+# Running in QEMU
+
+The current disk image can be launched with:
+
+```bash
+qemu-system-x86_64 \
+    -drive format=raw,file=target/unbound-os.img \
+    -display none \
+    -serial stdio
+```
+
+For debugging, the development script records QEMU output and CPU/interrupt diagnostics.
+
+---
+
+# Development Philosophy
+
+Unbound OS is being developed incrementally.
+
+Each subsystem is first implemented and tested independently before becoming a dependency for higher-level functionality.
+
+The current development direction is:
+
+```text
+Boot
+  ↓
+CPU initialization
+  ↓
+Interrupts
+  ↓
+Physical memory
+  ↓
+Virtual memory
+  ↓
+Address spaces
+  ↓
+Tasks / Context switching
+  ↓
+Scheduler
+  ↓
+Kernel objects
+  ↓
+IPC
+  ↓
+Syscalls
+  ↓
+Ring 3
+  ↓
+Processes
+  ↓
+Userspace
+  ↓
+Filesystem
+  ↓
+Shell
+  ↓
+Networking
+  ↓
+GUI
+```
+
+---
+
+# Roadmap
+
+## Phase 1 — Boot
+
+* [x] BIOS boot
+* [x] Stage 1
+* [x] Stage 2
+* [x] Kernel loading
+* [x] ELF64 loading
+* [x] BootInfo handoff
+
+## Phase 2 — CPU & Memory
+
+* [x] GDT
+* [x] TSS
+* [x] IDT
+* [x] Exception handling
+* [x] Physical frame allocator
+* [x] Page tables
+* [x] Virtual memory
+* [x] Address spaces
+* [x] CR3 switching
+* [x] Kernel heap mapping
+
+## Phase 3 — Execution
+
+* [x] Task contexts
+* [x] Kernel stacks
+* [x] Cooperative context switching
+* [x] PIC
+* [x] PIT
+* [x] Timer IRQ
+* [ ] Preemptive scheduling
+* [ ] Stable task switching from IRQ0
+
+## Phase 4 — Kernel Objects & IPC
+
+* [x] Object handles
+* [x] Object table
+* [x] Generation counters
+* [x] IPC endpoints
+* [x] IPC message queues
+
+## Phase 5 — Syscalls & Userspace
+
+* [x] Syscall ABI
+* [x] SYSCALL MSRs
+* [x] SYSCALL entry
+* [x] SYSRET infrastructure
+* [x] User GDT segments
+* [x] User address-space mappings
+* [ ] Stable Ring 3 entry
+* [ ] Stable Ring 3 → Ring 0 syscall
+* [ ] Stable Ring 0 → Ring 3 return
+* [ ] User process abstraction
+
+## Phase 6 — Processes
+
+* [ ] Process creation
+* [ ] Thread creation
+* [ ] Per-process address spaces
+* [ ] Per-thread kernel stacks
+* [ ] Scheduler integration
+* [ ] Process isolation
+
+## Phase 7 — Userspace
+
+* [ ] Userspace runtime
+* [ ] Init process
+* [ ] Basic libraries
+* [ ] User applications
+* [ ] Shell
+
+## Phase 8 — Storage & Networking
+
+* [ ] Filesystem
+* [ ] Block devices
+* [ ] Storage drivers
+* [ ] Network stack
+* [ ] Network drivers
+
+## Phase 9 — Desktop
+
+* [ ] Graphics subsystem
+* [ ] Window manager
+* [ ] Input system
+* [ ] Desktop environment
+
+---
+
+# Long-Term Vision
+
+Unbound OS is intended to become a complete operating-system platform built around:
+
+* User ownership
+* Minimal trusted components
+* Explicit system interfaces
+* Process isolation
+* Capability-oriented kernel objects
+* IPC-based system architecture
+* Native userspace
+* A custom boot and execution environment
+
+The project is intentionally being built from the lowest level upward.
+
+> **Your device. Your software. Your rules.**
