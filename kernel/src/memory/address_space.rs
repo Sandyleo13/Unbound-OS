@@ -2,7 +2,7 @@ use core::arch::asm;
 
 use super::address::phys_to_virt;
 use super::frame_allocator::FrameAllocator;
-use super::page_table::{map, PageTable, PAGE_SIZE};
+use super::page_table::{PAGE_SIZE, PageTable, map};
 
 pub struct AddressSpace {
     pub pml4_phys: u64,
@@ -11,13 +11,9 @@ pub struct AddressSpace {
 impl AddressSpace {
     /// Create a fresh address space with an empty PML4.
     pub fn new(allocator: &mut FrameAllocator) -> Result<Self, &'static str> {
-        let pml4_phys = allocator
-            .allocate_frame()
-            .ok_or("out of physical memory")?;
+        let pml4_phys = allocator.allocate_frame().ok_or("out of physical memory")?;
 
-        let pml4 = unsafe {
-            &mut *(phys_to_virt(pml4_phys) as *mut PageTable)
-        };
+        let pml4 = unsafe { &mut *(phys_to_virt(pml4_phys) as *mut PageTable) };
 
         pml4.zero();
 
@@ -27,6 +23,10 @@ impl AddressSpace {
     /// Identity-map a physical range.
     ///
     /// Virtual address == physical address.
+    ///
+    /// Identity mappings created here are supervisor-only.
+    /// User mappings must explicitly pass `user = true`
+    /// through the lower-level `page_table::map()` API.
     pub fn identity_map(
         &mut self,
         allocator: &mut FrameAllocator,
@@ -46,20 +46,12 @@ impl AddressSpace {
             return Err("identity-map range is empty");
         }
 
-        let pml4 = unsafe {
-            &mut *(phys_to_virt(self.pml4_phys) as *mut PageTable)
-        };
+        let pml4 = unsafe { &mut *(phys_to_virt(self.pml4_phys) as *mut PageTable) };
 
         let mut address = start;
 
         while address < end {
-            map(
-                pml4,
-                allocator,
-                address,
-                address,
-                writable,
-            )?;
+            map(pml4, allocator, address, address, writable, false)?;
 
             address += PAGE_SIZE;
         }

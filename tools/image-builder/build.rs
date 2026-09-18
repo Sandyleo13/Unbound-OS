@@ -37,8 +37,7 @@ fn main() {
         .trim()
         .to_owned();
 
-    let host = env::var("HOST")
-        .expect("Cargo HOST environment variable is not set");
+    let host = env::var("HOST").expect("Cargo HOST environment variable is not set");
 
     let objcopy = PathBuf::from(sysroot)
         .join("lib")
@@ -48,10 +47,7 @@ fn main() {
         .join("llvm-objcopy");
 
     if !objcopy.exists() {
-        panic!(
-            "llvm-objcopy not found at: {}",
-            objcopy.display()
-        );
+        panic!("llvm-objcopy not found at: {}", objcopy.display());
     }
 
     let status = Command::new(&objcopy)
@@ -65,8 +61,5 @@ fn main() {
         panic!("llvm-objcopy failed while stripping kernel ELF");
     }
 
-    println!(
-        "cargo:warning=Kernel stripped: {}",
-        stripped.display()
-    );
+    println!("cargo:warning=Kernel stripped: {}", stripped.display());
 }

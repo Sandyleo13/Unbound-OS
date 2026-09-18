@@ -12,9 +12,24 @@ org 0x8000
 ; Kernel temporary buffer:
 ;   physical 0x20000
 ;
-; Kernel final load addresses:
-;   determined from ELF PT_LOAD entries
+; Maximum kernel:
+;   768 sectors
+;   768 × 512 = 393216 bytes
+;   256 KiB
+;
+; Buffer:
+;   0x20000 - 0x60000
+;
+; E820 memory map:
+;   0x60000
+;
+; BIOS disk reads:
+;   32 sectors per INT 13h call
+;
+; This avoids BIOS/QEMU failures caused by requesting
+; a very large transfer in one INT 13h operation.
 ; ============================================================
+
 
 start:
     cli
@@ -32,18 +47,29 @@ start:
     mov si, stage2_message
     call print_string_16
 
+
     ; --------------------------------------------------------
     ; Load kernel ELF
+    ;
+    ; Kernel starts at LBA 33.
+    ;
+    ; Maximum:
+    ;   512 sectors
+    ;
+    ; BIOS transfer:
+    ;   32 sectors per operation
+    ;
+    ; Destination:
+    ;   physical 0x20000
     ; --------------------------------------------------------
 
-    mov si, kernel_dap
-    mov dl, [boot_drive]
-    mov ah, 0x42
-    int 0x13
+    call load_kernel
+
     jc kernel_disk_error
 
     mov si, kernel_loaded_message
     call print_string_16
+
 
     ; --------------------------------------------------------
     ; Get BIOS physical memory map using INT 15h E820
@@ -53,11 +79,13 @@ start:
     ;
     ; Maximum:
     ;   128 entries
-    ;   128 * 24 = 3072 bytes
+    ;   128 × 24 = 3072 bytes
     ; --------------------------------------------------------
 
     call detect_memory_map
+
     jc memory_map_error
+
 
     ; --------------------------------------------------------
     ; Enter protected mode
@@ -72,6 +100,221 @@ start:
     mov cr0, eax
 
     jmp 0x08:protected_mode_entry
+
+
+; ============================================================
+; LOAD KERNEL
+;
+; Kernel:
+;   Starting LBA = 33
+;   Maximum sectors = 512
+;
+; BIOS read:
+;   32 sectors per operation
+;
+; Destination:
+;   0x20000
+;
+; Each 32-sector chunk:
+;   32 × 512 = 16384 bytes = 0x4000
+;
+; Segment increment:
+;   0x400
+;
+; Example:
+;
+;   chunk 0 -> 0x2000:0000 = 0x20000
+;   chunk 1 -> 0x2400:0000 = 0x24000
+;   ...
+;   chunk 15 -> 0x5C00:0000 = 0x5C000
+;
+; Final address:
+;   0x60000
+;
+; Returns:
+;   CF clear = success
+;   CF set   = disk error
+; ============================================================
+
+load_kernel:
+
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+    push es
+
+    ; --------------------------------------------------------
+    ; Initialize loader state
+    ; --------------------------------------------------------
+
+    mov word [kernel_remaining], kernel_max_sectors
+
+    mov word [kernel_destination_segment], 0x2000
+
+    mov dword [kernel_current_lba_low], 33
+    mov dword [kernel_current_lba_high], 0
+
+
+.load_next_chunk:
+
+    ; --------------------------------------------------------
+    ; Are all sectors loaded?
+    ; --------------------------------------------------------
+
+    cmp word [kernel_remaining], 0
+    je .success
+
+
+    ; --------------------------------------------------------
+    ; Determine chunk size
+    ;
+    ; Normally:
+    ;   32 sectors
+    ;
+    ; Final chunk:
+    ;   remaining sectors
+    ; --------------------------------------------------------
+
+    mov ax, [kernel_remaining]
+
+    cmp ax, kernel_read_chunk
+    jbe .use_remaining
+
+    mov ax, kernel_read_chunk
+
+
+.use_remaining:
+
+    ; AX = sectors to read
+    mov [kernel_current_chunk], ax
+
+
+    ; --------------------------------------------------------
+    ; Build current Disk Address Packet
+    ; --------------------------------------------------------
+
+    mov word [kernel_dap + 2], ax
+
+    mov word [kernel_dap + 4], 0
+
+    mov ax, [kernel_destination_segment]
+    mov word [kernel_dap + 6], ax
+
+    mov eax, [kernel_current_lba_low]
+    mov dword [kernel_dap + 8], eax
+
+    mov eax, [kernel_current_lba_high]
+    mov dword [kernel_dap + 12], eax
+
+
+    ; --------------------------------------------------------
+    ; Restore boot drive
+    ;
+    ; BIOS should preserve DL, but explicitly restoring it
+    ; makes the loader independent of that assumption.
+    ; --------------------------------------------------------
+
+    mov dl, [boot_drive]
+
+
+    ; --------------------------------------------------------
+    ; BIOS INT 13h Extensions
+    ;
+    ; AH = 42h
+    ; DL = boot drive
+    ; DS:SI = Disk Address Packet
+    ; --------------------------------------------------------
+
+    mov si, kernel_dap
+
+    mov ah, 0x42
+
+    int 0x13
+
+    jc .disk_error
+
+
+    ; --------------------------------------------------------
+    ; Advance remaining sector count
+    ; --------------------------------------------------------
+
+    mov ax, [kernel_current_chunk]
+
+    sub [kernel_remaining], ax
+
+
+    ; --------------------------------------------------------
+    ; Advance LBA
+    ;
+    ; LBA += number of sectors read
+    ; --------------------------------------------------------
+
+    xor edx, edx
+
+    mov dx, [kernel_current_chunk]
+
+    add dword [kernel_current_lba_low], edx
+
+    adc dword [kernel_current_lba_high], 0
+
+
+    ; --------------------------------------------------------
+    ; Advance destination segment
+    ;
+    ; 1 sector = 512 bytes
+    ;
+    ; 32 sectors = 16384 bytes = 0x4000
+    ;
+    ; Segment increment:
+    ;
+    ;   0x4000 / 16 = 0x400
+    ; --------------------------------------------------------
+
+    mov ax, [kernel_current_chunk]
+
+    shl ax, 5
+
+    add [kernel_destination_segment], ax
+
+
+    ; --------------------------------------------------------
+    ; Continue
+    ; --------------------------------------------------------
+
+    jmp .load_next_chunk
+
+
+.disk_error:
+
+    stc
+
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+
+    ret
+
+
+.success:
+
+    clc
+
+    pop es
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+
+    ret
 
 
 ; ============================================================
@@ -97,8 +340,6 @@ start:
 ;   ES:DI = destination
 ; ============================================================
 
-bits 16
-
 detect_memory_map:
 
     push es
@@ -106,29 +347,43 @@ detect_memory_map:
     push si
     push dx
 
+    ; --------------------------------------------------------
     ; E820 buffer = physical 0x60000
+    ; --------------------------------------------------------
+
     mov ax, 0x6000
     mov es, ax
     xor di, di
 
+    ; --------------------------------------------------------
     ; EBX = E820 continuation value
+    ; --------------------------------------------------------
+
     xor ebx, ebx
 
+    ; --------------------------------------------------------
     ; SI = entry count
+    ; --------------------------------------------------------
+
     xor si, si
+
 
 .e820_next:
 
+    ; --------------------------------------------------------
     ; Maximum 128 entries
+    ; --------------------------------------------------------
+
     cmp si, 128
     jae .success
+
 
     ; --------------------------------------------------------
     ; INT 15h, E820
     ; --------------------------------------------------------
 
     mov eax, 0xE820
-    mov edx, 0x534D4150        ; "SMAP"
+    mov edx, 0x534D4150
     mov ecx, 24
 
     ; Extended attributes = valid
@@ -136,26 +391,32 @@ detect_memory_map:
 
     int 0x15
 
+
     ; --------------------------------------------------------
     ; Check BIOS result
     ; --------------------------------------------------------
 
-    ; Carry flag = BIOS error
     jc .cf_error
 
-    ; BIOS must return SMAP signature
     cmp eax, 0x534D4150
     jne .signature_error
 
-    ; BIOS must return at least 20 bytes
     cmp ecx, 20
     jb .size_error
 
+
+    ; --------------------------------------------------------
     ; Valid entry
+    ; --------------------------------------------------------
+
     inc si
     add di, 24
 
+
+    ; --------------------------------------------------------
     ; EBX = 0 means final entry
+    ; --------------------------------------------------------
+
     test ebx, ebx
     jz .success
 
@@ -172,6 +433,7 @@ detect_memory_map:
     pop si
     pop di
     pop es
+
     ret
 
 
@@ -186,6 +448,7 @@ detect_memory_map:
     pop si
     pop di
     pop es
+
     ret
 
 
@@ -200,6 +463,7 @@ detect_memory_map:
     pop si
     pop di
     pop es
+
     ret
 
 
@@ -214,6 +478,7 @@ detect_memory_map:
     pop si
     pop di
     pop es
+
     ret
 
 
@@ -226,6 +491,7 @@ bits 32
 protected_mode_entry:
 
     mov ax, 0x10
+
     mov ds, ax
     mov es, ax
     mov fs, ax
@@ -233,6 +499,7 @@ protected_mode_entry:
     mov ss, ax
 
     mov esp, 0x90000
+
 
     ; --------------------------------------------------------
     ; Enable A20
@@ -242,12 +509,14 @@ protected_mode_entry:
     or al, 00000010b
     out 0x92, al
 
+
     ; --------------------------------------------------------
     ; Load PML4
     ; --------------------------------------------------------
 
     mov eax, pml4
     mov cr3, eax
+
 
     ; --------------------------------------------------------
     ; Enable PAE
@@ -256,6 +525,7 @@ protected_mode_entry:
     mov eax, cr4
     or eax, 0x20
     mov cr4, eax
+
 
     ; --------------------------------------------------------
     ; Enable Long Mode
@@ -268,6 +538,7 @@ protected_mode_entry:
 
     wrmsr
 
+
     ; --------------------------------------------------------
     ; Enable paging
     ; --------------------------------------------------------
@@ -275,6 +546,7 @@ protected_mode_entry:
     mov eax, cr0
     or eax, 0x80000000
     mov cr0, eax
+
 
     ; --------------------------------------------------------
     ; Enter 64-bit mode
@@ -292,15 +564,18 @@ bits 64
 long_mode_entry:
 
     mov ax, 0x10
+
     mov ds, ax
     mov es, ax
     mov ss, ax
 
     xor eax, eax
+
     mov fs, ax
     mov gs, ax
 
     mov rsp, 0x90000
+
 
     mov rsi, long_mode_message
     call serial_write_string_64
@@ -308,23 +583,37 @@ long_mode_entry:
     mov rsi, kernel_loading_message
     call serial_write_string_64
 
+
     ; --------------------------------------------------------
     ; Parse ELF64 and load PT_LOAD segments
     ; --------------------------------------------------------
 
     mov rsi, kernel_buffer
 
+
+    ; --------------------------------------------------------
     ; Check ELF magic
+    ; --------------------------------------------------------
+
     cmp dword [rsi], 0x464C457F
     jne elf_error
 
+
+    ; --------------------------------------------------------
     ; Check ELF class = ELF64
+    ; --------------------------------------------------------
+
     cmp byte [rsi + 4], 2
     jne elf_error
 
+
+    ; --------------------------------------------------------
     ; Check little endian
+    ; --------------------------------------------------------
+
     cmp byte [rsi + 5], 1
     jne elf_error
+
 
     ; --------------------------------------------------------
     ; Read ELF header fields
@@ -337,21 +626,21 @@ long_mode_entry:
 
     mov r12, [rsi + 0x18]
 
-    ; --------------------------------------------------------
-    ; Track physical address range of loaded kernel segments
-    ;
-    ; r10 = lowest p_paddr
-    ; r11 = highest p_paddr + p_memsz
-    ; --------------------------------------------------------
-
     mov r10, 0xFFFFFFFFFFFFFFFF
+
     xor r11d, r11d
 
     mov r13, [rsi + 0x20]
+
     movzx r14, word [rsi + 0x36]
+
     movzx r15, word [rsi + 0x38]
 
+
+    ; --------------------------------------------------------
     ; rbx = first program header
+    ; --------------------------------------------------------
+
     lea rbx, [rsi + r13]
 
     xor r8d, r8d
@@ -365,6 +654,7 @@ elf_program_loop:
 
     cmp r8, r15
     jae elf_segments_done
+
 
     ; --------------------------------------------------------
     ; ELF64 Program Header
@@ -380,15 +670,19 @@ elf_program_loop:
     ; --------------------------------------------------------
 
     mov eax, dword [rbx]
+
     cmp eax, 1
     jne next_program_header
+
 
     ; --------------------------------------------------------
     ; Source = kernel_buffer + p_offset
     ; --------------------------------------------------------
 
     mov r9, [rbx + 0x08]
+
     lea rsi, [kernel_buffer + r9]
+
 
     ; --------------------------------------------------------
     ; Update kernel physical start
@@ -401,13 +695,16 @@ elf_program_loop:
 
     mov r10, rax
 
+
 .range_start_done:
+
 
     ; --------------------------------------------------------
     ; Update kernel physical end
     ; --------------------------------------------------------
 
     mov rax, [rbx + 0x18]
+
     add rax, [rbx + 0x28]
 
     cmp rax, r11
@@ -415,13 +712,16 @@ elf_program_loop:
 
     mov r11, rax
 
+
 .range_end_done:
+
 
     ; --------------------------------------------------------
     ; Destination = p_paddr
     ; --------------------------------------------------------
 
     mov rdi, [rbx + 0x18]
+
 
     ; --------------------------------------------------------
     ; Copy p_filesz bytes
@@ -431,14 +731,17 @@ elf_program_loop:
 
     call memory_copy
 
+
     ; --------------------------------------------------------
     ; Zero p_memsz - p_filesz
     ; --------------------------------------------------------
 
     mov rax, [rbx + 0x28]
+
     sub rax, [rbx + 0x20]
 
     mov rcx, rax
+
     xor eax, eax
 
     call memory_zero
@@ -447,7 +750,9 @@ elf_program_loop:
 next_program_header:
 
     add rbx, r14
+
     inc r8
+
     jmp elf_program_loop
 
 
@@ -479,40 +784,84 @@ elf_segments_done:
 
     mov rdi, 0x70000
 
+
+    ; --------------------------------------------------------
     ; magic
+    ; --------------------------------------------------------
+
     mov rax, 0x554E424F554E4442
+
     mov [rdi + 0x00], rax
 
+
+    ; --------------------------------------------------------
     ; version = 2
+    ; --------------------------------------------------------
+
     mov dword [rdi + 0x08], 2
 
+
+    ; --------------------------------------------------------
     ; size = 64
+    ; --------------------------------------------------------
+
     mov dword [rdi + 0x0C], 64
 
+
+    ; --------------------------------------------------------
     ; boot drive + reserved bytes
+    ; --------------------------------------------------------
+
     mov qword [rdi + 0x10], 0
 
     mov al, [abs boot_drive]
+
     mov [rdi + 0x10], al
 
+
+    ; --------------------------------------------------------
     ; kernel physical start
+    ; --------------------------------------------------------
+
     mov [rdi + 0x18], r10
 
+
+    ; --------------------------------------------------------
     ; kernel physical end
+    ; --------------------------------------------------------
+
     mov [rdi + 0x20], r11
 
+
+    ; --------------------------------------------------------
     ; memory_map_addr
+    ; --------------------------------------------------------
+
     mov qword [rdi + 0x28], 0x60000
 
+
+    ; --------------------------------------------------------
     ; memory_map_count
+    ; --------------------------------------------------------
+
     movzx rax, word [abs memory_map_count]
+
     mov dword [rdi + 0x30], eax
 
+
+    ; --------------------------------------------------------
     ; memory_map_entry_size
+    ; --------------------------------------------------------
+
     mov dword [rdi + 0x34], 24
 
+
+    ; --------------------------------------------------------
     ; reserved
+    ; --------------------------------------------------------
+
     mov qword [rdi + 0x38], 0
+
 
     ; --------------------------------------------------------
     ; Pass BootInfo pointer to kernel
@@ -520,12 +869,15 @@ elf_segments_done:
 
     mov rdi, 0x70000
 
+
     ; --------------------------------------------------------
     ; Tell us the kernel is ready
     ; --------------------------------------------------------
 
     mov rsi, kernel_ready_message
+
     call serial_write_string_64
+
 
     ; --------------------------------------------------------
     ; Jump to ELF entry
@@ -548,20 +900,26 @@ elf_segments_done:
 memory_copy:
 
     test rcx, rcx
+
     jz .done
+
 
 .copy_loop:
 
     mov al, [rsi]
+
     mov [rdi], al
 
     inc rsi
     inc rdi
+
     dec rcx
 
     jnz .copy_loop
 
+
 .done:
+
     ret
 
 
@@ -575,18 +933,23 @@ memory_copy:
 memory_zero:
 
     test rcx, rcx
+
     jz .done
+
 
 .zero_loop:
 
     mov byte [rdi], 0
 
     inc rdi
+
     dec rcx
 
     jnz .zero_loop
 
+
 .done:
+
     ret
 
 
@@ -603,12 +966,16 @@ serial_write_string_64:
     lodsb
 
     test al, al
+
     jz .done
 
     call serial_write_64
+
     jmp .next
 
+
 .done:
+
     ret
 
 
@@ -621,18 +988,22 @@ serial_write_64:
     push rax
     push rdx
 
+
 .wait:
 
     mov dx, 0x3FD
+
     in al, dx
 
     test al, 0x20
+
     jz .wait
 
     pop rdx
     pop rax
 
     mov dx, 0x3F8
+
     out dx, al
 
     ret
@@ -653,12 +1024,16 @@ print_string_16:
     lodsb
 
     test al, al
+
     jz .done
 
     call serial_write_16
+
     jmp .next
 
+
 .done:
+
     ret
 
 
@@ -669,31 +1044,51 @@ print_string_16:
 serial_init:
 
     mov dx, 0x3F9
+
     xor al, al
+
     out dx, al
 
+
     mov dx, 0x3FB
+
     mov al, 0x80
+
     out dx, al
+
 
     mov dx, 0x3F8
+
     mov al, 0x03
+
     out dx, al
+
 
     mov dx, 0x3F9
+
     xor al, al
+
     out dx, al
+
 
     mov dx, 0x3FB
+
     mov al, 0x03
+
     out dx, al
+
 
     mov dx, 0x3FA
+
     mov al, 0xC7
+
     out dx, al
 
+
     mov dx, 0x3FC
+
     mov al, 0x0B
+
     out dx, al
 
     ret
@@ -708,18 +1103,24 @@ serial_write_16:
     push ax
     push dx
 
+
 .wait:
 
     mov dx, 0x3FD
+
     in al, dx
 
     test al, 0x20
+
     jz .wait
+
 
     pop dx
     pop ax
 
+
     mov dx, 0x3F8
+
     out dx, al
 
     ret
@@ -732,27 +1133,47 @@ serial_write_16:
 kernel_disk_error:
 
     mov si, kernel_disk_error_message
+
     call print_string_16
 
+
 .halt:
+
     cli
+
     hlt
+
     jmp .halt
 
 
 memory_map_error:
 
     mov si, memory_map_error_message
+
     call print_string_16
 
-    ; Print diagnostic code: 1, 2, or 3
+
+    ; --------------------------------------------------------
+    ; Print diagnostic code:
+    ;
+    ; 1 = Carry Flag / BIOS error
+    ; 2 = Invalid SMAP signature
+    ; 3 = Returned structure smaller than 20 bytes
+    ; --------------------------------------------------------
+
     mov al, [memory_map_error_code]
+
     add al, '0'
+
     call serial_write_16
 
+
 .halt:
+
     cli
+
     hlt
+
     jmp .halt
 
 
@@ -761,11 +1182,16 @@ bits 64
 elf_error:
 
     mov rsi, elf_error_message
+
     call serial_write_string_64
 
+
 .halt:
+
     cli
+
     hlt
+
     jmp .halt
 
 
@@ -786,6 +1212,7 @@ kernel_disk_error_message:
 
 memory_map_error_message:
     db "MEMORY MAP ERROR CODE ", 0
+
 
 bits 64
 
@@ -811,35 +1238,80 @@ bits 16
 boot_drive:
     db 0
 
-; Number of valid E820 memory-map entries
+
+; ============================================================
+; E820 MEMORY MAP COUNT
+; ============================================================
+
 memory_map_count:
     dw 0
 
-; E820 diagnostic error code
+
+; ============================================================
+; E820 DIAGNOSTIC ERROR CODE
+;
 ; 1 = Carry Flag / BIOS error
 ; 2 = Invalid SMAP signature
 ; 3 = Returned structure smaller than 20 bytes
+; ============================================================
+
 memory_map_error_code:
     db 0
 
 
 ; ============================================================
+; KERNEL LOAD STATE
+; ============================================================
+
+; Remaining sectors to read
+kernel_remaining:
+    dw 0
+
+
+; Current chunk size
+kernel_current_chunk:
+    dw 0
+
+
+; Destination segment
+kernel_destination_segment:
+    dw 0
+
+
+; Current LBA low 32 bits
+kernel_current_lba_low:
+    dd 0
+
+
+; Current LBA high 32 bits
+kernel_current_lba_high:
+    dd 0
+
+
+; ============================================================
 ; KERNEL BIOS DISK ADDRESS PACKET
 ;
-; Read 29 sectors starting at LBA 33.
+; This packet is modified for every 32-sector read.
 ;
-; Destination:
-;   0x2000:0000
-;   physical 0x20000
+; Layout:
+;
+; +0x00  DAP size
+; +0x01  reserved
+; +0x02  sector count
+; +0x04  buffer offset
+; +0x06  buffer segment
+; +0x08  LBA low
+; +0x0C  LBA high
 ; ============================================================
 
 align 4, db 0
 
 kernel_dap:
+
     db 0x10
     db 0x00
 
-    dw 74
+    dw 32
 
     dw 0x0000
     dw 0x2000
@@ -855,8 +1327,10 @@ align 8, db 0
 
 gdt_start:
 
+
 gdt_null:
     dq 0
+
 
 gdt_code32:
     dw 0xFFFF
@@ -866,6 +1340,7 @@ gdt_code32:
     db 0xCF
     db 0
 
+
 gdt_data:
     dw 0xFFFF
     dw 0
@@ -873,6 +1348,7 @@ gdt_data:
     db 0x92
     db 0xCF
     db 0
+
 
 gdt_code64:
     dw 0xFFFF
@@ -882,7 +1358,9 @@ gdt_code64:
     db 0xAF
     db 0
 
+
 gdt_end:
+
 
 gdt_descriptor:
     dw gdt_end - gdt_start - 1
@@ -908,26 +1386,56 @@ gdt_descriptor:
 align 4096, db 0
 
 pml4:
+
     dq pdpt + 0x003
+
     times 511 dq 0
+
 
 align 4096, db 0
 
 pdpt:
+
     dq page_directory + 0x003
+
     times 511 dq 0
+
 
 align 4096, db 0
 
 page_directory:
+
     dq 0x0000000000000083
+
     times 511 dq 0
 
 
 ; ============================================================
-; CONSTANTS / LABELS
+; CONSTANTS
 ; ============================================================
 
+; Kernel temporary buffer
 kernel_buffer equ 0x20000
+
+
+; Maximum kernel sectors
+kernel_max_sectors equ 1024
+
+
+; BIOS read chunk
+kernel_read_chunk equ 32
+
+
+; Maximum kernel buffer size
+kernel_buffer_size equ kernel_max_sectors * 512
+
+
+; Kernel buffer end
+kernel_buffer_end equ kernel_buffer + kernel_buffer_size
+
+
+; ============================================================
+; STAGE 2 END
+; ============================================================
 
 stage2_end:

@@ -24,9 +24,7 @@ pub struct FrameAllocator {
 
 impl FrameAllocator {
     pub const fn empty() -> Self {
-        Self {
-            free_frames: 0,
-        }
+        Self { free_frames: 0 }
     }
 
     pub fn initialize(

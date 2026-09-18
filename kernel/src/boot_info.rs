@@ -29,5 +29,4 @@ pub struct MemoryMapEntry {
 pub const BOOT_INFO_MAGIC: u64 = 0x554E424F554E4442;
 pub const BOOT_INFO_VERSION: u32 = 2;
 
-pub const MEMORY_MAP_ENTRY_SIZE: u32 =
-    core::mem::size_of::<MemoryMapEntry>() as u32;
+pub const MEMORY_MAP_ENTRY_SIZE: u32 = core::mem::size_of::<MemoryMapEntry>() as u32;
